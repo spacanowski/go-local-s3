@@ -3,13 +3,13 @@ package main
 // go get github.com/aws/aws-sdk-go
 // go get -u github.com/gorilla/mux
 
-// go run main.go /tmp
+// go run main.go /tmp/local-buckets
 
 // https://github.com/aws/aws-sdk-go/blob/master/models/apis/s3/2006-03-01/api-2.json
 // https://github.com/aws/aws-sdk-go/blob/master/service/s3/api.go
 // https://docs.aws.amazon.com/sdk-for-go/api/service/s3/#ListObjectsInput
 
-// add to etc/hosts 127.0.0.1	test-bucket.localhost
+// add to etc/hosts 127.0.0.1    test-bucket.localhost
 
 import (
 	"encoding/json"
@@ -27,6 +27,16 @@ import (
 
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/gorilla/mux"
+)
+
+const (
+	contentTypeHeader  = "Content-Type"
+	acceptHeader       = "Accept"
+	applicationXML     = "application/xml"
+	applicationJSON    = "application/json"
+	separator          = "/"
+	escapedSeparator   = "%2f"
+	subdomainSeparator = "."
 )
 
 var localS3Path string
@@ -58,7 +68,7 @@ func main() {
 }
 
 func handleList(w http.ResponseWriter, r *http.Request) {
-	if strings.Contains(r.Host, ".") {
+	if strings.Contains(r.Host, subdomainSeparator) {
 		listObjects(w, r)
 	} else {
 		listBuckets(w, r)
@@ -95,22 +105,27 @@ func listObjects(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var result s3.ListObjectsOutput
 	var count int
 	marker := r.FormValue("marker")
 	prefix := r.FormValue("prefix")
 	maxKeys, _ := strconv.Atoi(r.FormValue("max-keys"))
 	delimiter := r.FormValue("delimiter")
-	commonPrefixes := map[string]bool{}
+	commonPrefixes := make(map[string]bool)
 	re := getRegexpForList(delimiter, prefix)
+	result := s3.ListObjectsOutput{Name: &bucket, Marker: &marker, Prefix: &prefix, Delimiter: &delimiter}
 
-	result.SetName(bucket)
-	result.SetMarker(marker)
 	result.SetMaxKeys(int64(maxKeys))
-	result.SetPrefix(prefix)
-	result.SetDelimiter(delimiter)
+	files := getDirFilesFromMarker(path, &marker)
+	var contentsSize int
+	if maxKeys != 0 {
+		contentsSize = maxKeys
+	} else {
+		contentsSize = len(files)
+	}
 
-	for _, d := range getDirFilesFromMarker(path, &marker) {
+	contents := make([]*s3.Object, 0, contentsSize)
+
+	for _, d := range files {
 		name := unescapeKey(d.Name())
 
 		if prefix != "" && !strings.HasPrefix(name, prefix) {
@@ -131,17 +146,17 @@ func listObjects(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 
-		content := s3.Object{}
+		content := s3.Object{Key: &name}
 
-		content.SetKey(name)
 		content.SetSize(d.Size())
 		content.SetLastModified(d.ModTime())
 		content.SetETag(strconv.FormatInt(d.ModTime().UnixNano(), 10))
-
-		result.SetContents(append(result.Contents, &content))
+		contents = append(contents, &content)
 
 		count++
 	}
+
+	result.SetContents(contents)
 
 	if delimiter != "" {
 		result.SetCommonPrefixes(mapCommonPrefixesToResult(commonPrefixes))
@@ -154,12 +169,15 @@ func listObjects(w http.ResponseWriter, r *http.Request) {
 
 func getRegexpForList(delimiter, prefix string) *regexp.Regexp {
 	if delimiter != "" {
-		delimRegexp := "("
+		delimRegexp := strings.Builder{}
+		delimRegexp.WriteString("(")
 		if prefix != "" {
-			delimRegexp = delimRegexp + prefix
+			delimRegexp.WriteString(prefix)
 		}
-		delimRegexp = delimRegexp + ".*" + delimiter + ").*"
-		re, _ := regexp.Compile(delimRegexp)
+		delimRegexp.WriteString(".*")
+		delimRegexp.WriteString(delimiter)
+		delimRegexp.WriteString(").*")
+		re, _ := regexp.Compile(delimRegexp.String())
 		return re
 	}
 
@@ -168,10 +186,12 @@ func getRegexpForList(delimiter, prefix string) *regexp.Regexp {
 
 func mapCommonPrefixesToResult(commonPrefixes map[string]bool) []*s3.CommonPrefix {
 	var cp []*s3.CommonPrefix
+
 	for key := range commonPrefixes {
 		c := key
 		cp = append(cp, &s3.CommonPrefix{Prefix: &c})
 	}
+
 	return cp
 }
 
@@ -196,7 +216,7 @@ func getDirFilesFromMarker(path string, marker *string) []os.FileInfo {
 func getBucketLocation(w http.ResponseWriter, r *http.Request) {
 	bucket := getBucket(r)
 	path := filepath.Join(localS3Path, bucket)
-	resourcePath := "/" + bucket
+	resourcePath := separator + bucket
 
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		handleError(r, w, s3.ErrCodeNoSuchBucket,
@@ -223,7 +243,7 @@ func createBucket(w http.ResponseWriter, r *http.Request) {
 
 	bucket := getBucket(r)
 	path := filepath.Join(localS3Path, bucket)
-	resourcePath := "/" + bucket
+	resourcePath := separator + bucket
 
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		os.Mkdir(path, os.ModePerm)
@@ -281,7 +301,7 @@ func getObject(w http.ResponseWriter, r *http.Request) {
 	if f, err := ioutil.ReadFile(path); err == nil {
 		w.Header().Add("ETag", "fba9dede5f27731c9771645a39863328")
 		w.Header().Add("Content-Length", string(len(f)))
-		w.Header().Add("Content-Type", "text/plain")
+		w.Header().Add(contentTypeHeader, "text/plain")
 		w.Write(f)
 	} else {
 		handleError(r, w, "Failed saving file", "Failed saving file", "Failed saving file")
@@ -342,10 +362,10 @@ func deleteObjects(w http.ResponseWriter, r *http.Request) {
 func parseBody(r *http.Request, w http.ResponseWriter, body io.Reader, result interface{}) error {
 	var err error
 
-	switch r.Header.Get("Content-Type") {
-	case "application/json":
+	switch r.Header.Get(contentTypeHeader) {
+	case applicationJSON:
 		err = json.NewDecoder(body).Decode(&result)
-	case "application/xml":
+	case applicationXML:
 		fallthrough
 	default:
 		err = xml.NewDecoder(body).Decode(&result)
@@ -369,26 +389,27 @@ func handleError(r *http.Request, w http.ResponseWriter, errorCode string, error
 }
 
 func getBucket(r *http.Request) string {
-	return strings.Split(r.Host, ".")[0]
+	return strings.Split(r.Host, subdomainSeparator)[0]
 }
 
 func escapeKey(unescapedKey string) string {
-	return strings.ReplaceAll(unescapedKey, "/", "%2f")
+	return strings.ReplaceAll(unescapedKey, separator, escapedSeparator)
 }
 
 func unescapeKey(escapedKey string) string {
-	return strings.ReplaceAll(escapedKey, "%2f", "/")
+	return strings.ReplaceAll(escapedKey, escapedSeparator, separator)
 }
 
 func addResponse(r *http.Request, w http.ResponseWriter, resp interface{}) {
-	switch r.Header.Get("Accept") {
-	case "application/json":
-		w.Header().Add("Content-Type", "application/json")
+	switch r.Header.Get(acceptHeader) {
+	case applicationJSON:
+		w.Header().Add(contentTypeHeader, applicationJSON)
 		json.NewEncoder(w).Encode(resp)
-	case "application/xml":
+	case applicationXML:
 		fallthrough
 	default:
-		w.Header().Add("Content-Type", "application/xml")
+		w.Header().Add(contentTypeHeader, applicationXML)
 		xml.NewEncoder(w).Encode(resp)
 	}
 }
+
