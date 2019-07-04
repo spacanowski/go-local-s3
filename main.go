@@ -382,7 +382,7 @@ func parseBody(r *http.Request, w http.ResponseWriter, body io.Reader, result in
 	return nil
 }
 
-func handleError(r *http.Request, w http.ResponseWriter, errorCode string, errorMsg string, logMsg string) {
+func handleError(r *http.Request, w http.ResponseWriter, errorCode, errorMsg, logMsg string) {
 	w.WriteHeader(http.StatusBadRequest)
 	addResponse(r, w, s3.Error{Code: &errorCode, Message: &errorMsg})
 	log.Printf(logMsg)
