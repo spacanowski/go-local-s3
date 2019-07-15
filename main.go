@@ -235,12 +235,6 @@ func getBucketLocation(w http.ResponseWriter, r *http.Request) {
 
 // curl -X POST localhost:8080/test-bucket -d '{"Buacket":"test-b"}' -i
 func createBucket(w http.ResponseWriter, r *http.Request) {
-	var body s3.CreateBucketInput
-
-	if err := parseBody(r, w, r.Body, &body); err != nil {
-		return
-	}
-
 	bucket := getBucket(r)
 	path := filepath.Join(localS3Path, bucket)
 	resourcePath := separator + bucket
