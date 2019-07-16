@@ -243,7 +243,7 @@ func createBucket(w http.ResponseWriter, r *http.Request) {
 		os.Mkdir(path, os.ModePerm)
 	} else {
 		handleError(r, w, s3.ErrCodeBucketAlreadyExists,
-			"The requested bucket name is not available. The bucket namespace is shared by all users of the system."+
+			"The requested bucket name is not available. The bucket namespace is shared by all users of the system. "+
 				"Please select a different name and try again.",
 			fmt.Sprintf("Bucket '%v' already exists\n", resourcePath))
 
